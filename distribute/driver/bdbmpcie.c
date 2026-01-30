@@ -5,6 +5,9 @@
 #include <linux/pci.h>
 #include <linux/pci_ids.h>
 #include <linux/interrupt.h>
+#include <linux/dma-mapping.h>
+#include <linux/mm.h>
+#include <linux/io.h>
 
 #include <linux/highmem.h>
 
@@ -101,7 +104,7 @@ static int create_dma_buffer(unsigned int bufcount) {
 	}
 
 	for ( bufidx = 0; bufidx < bufcount; bufidx++ ) {
-		void __iomem *maddr = NULL;
+		void *maddr = NULL;
 		struct page *pages = alloc_page(gfp_mask);
 		if ( pages == NULL ) {
 			printk(KERN_ERR "BlueDBM DMA buffer alloc failed! \n" );
@@ -110,11 +113,11 @@ static int create_dma_buffer(unsigned int bufcount) {
 		maddr = page_address(pages);
 		dma_pages[bufidx] = pages;
 
-		bus_addr = pci_map_single(pcidev, maddr, PAGE_SIZE, DMA_BIDIRECTIONAL);
+		bus_addr = dma_map_single(&pcidev->dev, maddr, PAGE_SIZE, DMA_BIDIRECTIONAL);
 		iowrite32(bus_addr, &bar0_data[DMA_ADDR_OFFSET + 4*bufidx]);
 		wmb();
 
-		if ( pci_dma_mapping_error(pcidev, bus_addr) ) {
+		if ( dma_mapping_error(&pcidev->dev, bus_addr) ) {
 			return 1;
 		}
 	}
@@ -389,7 +392,7 @@ static int bdbm_mmap(struct file *filp, struct vm_area_struct *vma) {
 		unsigned int intvsize = bar0_size - off;
 		// these are required for io maps, but is it okay for the buffer as well?
 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-		vma->vm_flags |= VM_IO;
+		vm_flags_set(vma, VM_IO);
 		if ( vsize < intvsize ) intvsize = vsize;
 		remap_pfn_range(vma, vma->vm_start, physical>>PAGE_SHIFT, intvsize, vma->vm_page_prot);
 
@@ -491,7 +494,7 @@ static int chrdev_init(void) {
 		unregister_chrdev_region(chrdev, 1);
 		return res;
 	}
-	class = class_create(THIS_MODULE, "bdbmpcie");
+	class = class_create("bdbmpcie");
 	device = device_create(class, NULL, chrdev, NULL, "bdbm_regs0");
 
 	//create_dma_buffer(mmap_buffersize/(1024*4)); // 1MB
@@ -539,7 +542,7 @@ static void __exit pcie_exit(void)
 	for ( i = 0; i < dma_pages_count; i++ ) {
 		//unsigned int page_addr = (unsigned long)page_address(dma_pages[i]);
 		//pci_unmap_single(pcidev, page_addr, PAGE_SIZE, DMA_BIDIRECTIONAL);
-		pci_unmap_single(pcidev, bar0_data[DMA_ADDR_OFFSET + 4*i], PAGE_SIZE, DMA_BIDIRECTIONAL);
+		dma_unmap_single(&pcidev->dev, bar0_data[DMA_ADDR_OFFSET + 4*i], PAGE_SIZE, DMA_BIDIRECTIONAL);
 		__free_page(dma_pages[i]);
 	}
 	if (dma_pages != NULL) kfree(dma_pages);
